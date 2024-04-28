@@ -7,27 +7,17 @@ import (
 	"net"
 	"net/http"
 	"sync"
-	"time"
 )
-
-var noAuthBody = []byte("Proxy Authentication Required")
-
-func Reject(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Proxy-Authenticate", `Basic realm="Authentication required"`)
-	w.WriteHeader(407)
-
-	w.Write(noAuthBody)
-}
 
 var Handler = http.HandlerFunc(Connect)
 
 func Connect(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodConnect:
-		connect(w, r)
-	default:
-		get(w, r)
+	if r.Method != http.MethodConnect {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
+
+	connect(w, r)
 }
 
 type flushWriter struct {
@@ -43,12 +33,6 @@ func (fw flushWriter) Write(p []byte) (n int, err error) {
 }
 
 func connect(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodConnect {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	println(r.ProtoMajor, r.Host)
 	destConn, err := net.Dial("tcp", r.Host)
 	if err != nil {
 		http.Error(w, "Failed to connect to the destination host", http.StatusServiceUnavailable)
@@ -62,7 +46,6 @@ func connect(w http.ResponseWriter, r *http.Request) {
 	default:
 		// Write 200 OK to the client to establish the connection
 		w.WriteHeader(http.StatusOK)
-
 		http.NewResponseController(w).Flush()
 
 		// Start copying data between client and destination host
@@ -182,45 +165,4 @@ func flushingIoCopy(dst io.Writer, src io.Reader, buf []byte) (written int64, er
 		}
 	}
 	return
-}
-
-func get(w http.ResponseWriter, r *http.Request) {
-	f, ok := w.(http.Flusher)
-	if !ok {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	to := flushWriter{w}
-
-	println(r.RequestURI)
-	req, _ := http.NewRequest(
-		r.Method,
-		r.RequestURI,
-		r.Body,
-	)
-	cli := http.Client{
-		Timeout: 10 * time.Minute,
-		// disable redirect
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	req.Header = r.Header
-	req.Header.Del("Proxy-Authorization")
-
-	resp, err := cli.Do(req)
-	if err != nil {
-		println(err.Error())
-		return
-	}
-	for k, v := range resp.Header {
-		if len(v) == 0 {
-			continue
-		}
-		w.Header().Set(k, v[0])
-	}
-	f.Flush()
-
-	io.Copy(to, resp.Body)
 }

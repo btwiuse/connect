@@ -5,7 +5,7 @@ go 1.22.2
 replace github.com/btwiuse/connect => ..
 
 require (
-	github.com/btwiuse/connect v0.0.4
+	github.com/btwiuse/connect v0.0.5
 	github.com/quic-go/quic-go v0.43.0
 	github.com/webteleport/utils v0.2.14
 )

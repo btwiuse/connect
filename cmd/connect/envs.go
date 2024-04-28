@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/quic-go/quic-go/http3"
 	"github.com/webteleport/utils"
 )
 
@@ -13,6 +14,7 @@ var (
 	CERT       = utils.EnvCert("localhost.pem")
 	KEY        = utils.EnvKey("localhost-key.pem")
 	PORT       = utils.EnvPort(":3000")
+	UDP_PORT   = utils.EnvUDPPort(PORT)
 	HTTPS_PORT = utils.LookupEnvPort("HTTPS_PORT")
 )
 
@@ -35,6 +37,7 @@ func LocalTLSConfig(certFile, keyFile string) *tls.Config {
 			"http/1.1",
 		}
 	}
+
 	return &tls.Config{
 		GetCertificate: GetCertificate,
 		NextProtos:     nextProtos,
@@ -55,6 +58,10 @@ func ListenAndServeTLS(router http.Handler) error {
 		return err
 	}
 	return nil
+}
+
+func ListenAndServeQUIC(router http.Handler) error {
+	return http3.ListenAndServeQUIC(UDP_PORT, CERT, KEY, router)
 }
 
 func ListenAndServe(router http.Handler) error {

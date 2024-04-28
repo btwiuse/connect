@@ -16,7 +16,7 @@ func Reject(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Proxy-Authenticate", `Basic realm="Authentication required"`)
 	w.WriteHeader(407)
 
-	_, err := w.Write(noAuthBody)
+	w.Write(noAuthBody)
 }
 
 var Handler = http.HandlerFunc(Connect)
@@ -43,8 +43,6 @@ func (fw flushWriter) Write(p []byte) (n int, err error) {
 }
 
 func connectMethod(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	defer cost(time.Now().UnixNano(), r.URL.RequestURI())
-
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	} else {
@@ -59,7 +57,6 @@ func connectMethod(ctx context.Context, w http.ResponseWriter, r *http.Request) 
 	conn, err := net.DialTimeout("tcp", remoteAddr, time.Second*5)
 
 	if err != nil {
-		Log.Error(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -78,14 +75,12 @@ func connectMethod(ctx context.Context, w http.ResponseWriter, r *http.Request) 
 			n, err := r.Body.Read(buf)
 			if err != nil {
 				if err != io.EOF {
-					Log.Error(err)
 				}
 				return
 			}
 			_, err = conn.Write(buf[:n])
 			if err != nil {
 				if err != io.EOF {
-					Log.Error(err)
 				}
 				return
 			}
@@ -99,7 +94,6 @@ func connectMethod(ctx context.Context, w http.ResponseWriter, r *http.Request) 
 			n, err := conn.Read(buf)
 			if err != nil {
 				if err != io.EOF {
-					Log.Error(err)
 				}
 				return
 			}
@@ -107,7 +101,6 @@ func connectMethod(ctx context.Context, w http.ResponseWriter, r *http.Request) 
 
 			if err != nil {
 				if err != io.EOF {
-					Log.Error(err)
 				}
 				return
 			}
@@ -118,8 +111,6 @@ func connectMethod(ctx context.Context, w http.ResponseWriter, r *http.Request) 
 }
 
 func get(w http.ResponseWriter, r *http.Request) {
-	defer cost(time.Now().UnixNano(), r.URL.RequestURI())
-
 	f, ok := w.(http.Flusher)
 	if !ok {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -139,7 +130,6 @@ func get(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := cli.Do(req)
 	if err != nil {
-		Log.Fatal(err)
 	}
 	for k, v := range resp.Header {
 		if len(v) == 0 {
@@ -150,4 +140,8 @@ func get(w http.ResponseWriter, r *http.Request) {
 	f.Flush()
 
 	io.Copy(to, resp.Body)
+}
+
+func closeConn(conn io.Closer) {
+	conn.Close()
 }

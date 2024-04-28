@@ -13,3 +13,4 @@
 
 vendor
 config.toml
+go.sum

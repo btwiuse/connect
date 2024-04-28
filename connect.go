@@ -1,4 +1,4 @@
-package h2proxy
+package connect
 
 import (
 	"context"
@@ -10,49 +10,23 @@ import (
 	"time"
 )
 
-type Http2Server struct {
-	Config *ServerConfig
-}
-
 var noAuthBody = []byte("Proxy Authentication Required")
 
-func (h Http2Server) Start() {
-	config := h.Config
-	//http.HandleFunc("/test", handle(config))
+func Reject(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Proxy-Authenticate", `Basic realm="Authentication required"`)
+	w.WriteHeader(407)
 
-	server := &http.Server{
-		Addr:        config.Server,
-		Handler:     http.HandlerFunc(handle(config)),
-		IdleTimeout: 60 * time.Second,
-		ReadTimeout: 60 * time.Second,
-	}
-	// require cert.
-	// generate cert for test:
-	// openssl req -new -x509 -days 365 -key test1.key -out test1.crt
-	Log.Fatal(server.ListenAndServeTLS(config.CaCrt, config.CaKey))
+	_, err := w.Write(noAuthBody)
 }
 
-func handle(config *ServerConfig) func(w http.ResponseWriter, r *http.Request) {
+var Handler = http.HandlerFunc(Connect)
 
-	return func(w http.ResponseWriter, r *http.Request) {
-		if config.NeedAuth && !CheckAuth(config.User, r) {
-			Log.Debug("auth failed")
-
-			w.Header().Set("Proxy-Authenticate", `Basic realm="Access to internal site"`)
-			w.WriteHeader(407)
-
-			_, err := w.Write(noAuthBody)
-			if err != nil {
-				Log.Error(err)
-			}
-			return
-		}
-		switch r.Method {
-		case http.MethodConnect:
-			connectMethod(r.Context(), w, r)
-		default:
-			get(w, r)
-		}
+func Connect(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodConnect:
+		connectMethod(r.Context(), w, r)
+	default:
+		get(w, r)
 	}
 }
 

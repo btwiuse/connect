@@ -26,10 +26,14 @@ func LocalTLSConfig(certFile, keyFile string) *tls.Config {
 		return &cert, nil
 	}
 	nextProtos := []string{
-		"h2",
 		"http/1.1",
 	}
-	if os.Getenv("H2") == "" {
+	// Prefer h2 if H2 env is set
+	if os.Getenv("H2") != "" {
+		nextProtos = []strings{
+			"h2",
+			"http/1.1",
+		}
 	}
 	return &tls.Config{
 		GetCertificate: GetCertificate,

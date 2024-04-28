@@ -30,7 +30,7 @@ func LocalTLSConfig(certFile, keyFile string) *tls.Config {
 	}
 	// Prefer h2 if H2 env is set
 	if os.Getenv("H2") != "" {
-		nextProtos = []strings{
+		nextProtos = []string{
 			"h2",
 			"http/1.1",
 		}

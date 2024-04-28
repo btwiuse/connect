@@ -1,11 +1,11 @@
 package connect
 
 import (
-	"context"
+	"bufio"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
@@ -24,7 +24,7 @@ var Handler = http.HandlerFunc(Connect)
 func Connect(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodConnect:
-		connectMethod(r.Context(), w, r)
+		connect(w, r)
 	default:
 		get(w, r)
 	}
@@ -42,72 +42,146 @@ func (fw flushWriter) Write(p []byte) (n int, err error) {
 	return
 }
 
-func connectMethod(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
-	} else {
-		w.WriteHeader(http.StatusInternalServerError)
+func connect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodConnect {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	remoteAddr := r.Host
-	if strings.Count(remoteAddr, ":") == 0 {
-		remoteAddr += ":443"
-	}
 
-	conn, err := net.DialTimeout("tcp", remoteAddr, time.Second*5)
-
+	println(r.ProtoMajor, r.Host)
+	destConn, err := net.Dial("tcp", r.Host)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
+		http.Error(w, "Failed to connect to the destination host", http.StatusServiceUnavailable)
 		return
 	}
-	conn.SetDeadline(time.Now().Add(time.Minute))
-	defer closeConn(conn)
+	defer destConn.Close()
 
-	to := flushWriter{w}
-	defer closeConn(r.Body)
+	switch r.ProtoMajor {
+	case 1:
+		serveHijack(w, destConn)
+	default:
+		// Write 200 OK to the client to establish the connection
+		w.WriteHeader(http.StatusOK)
 
-	wg := new(sync.WaitGroup)
-	wg.Add(2)
-	go func(wg *sync.WaitGroup) {
-		defer wg.Done()
-		buf := make([]byte, 1024*10)
-		for {
-			n, err := r.Body.Read(buf)
+		http.NewResponseController(w).Flush()
+
+		// Start copying data between client and destination host
+		dualStream(destConn, r.Body, w)
+	}
+}
+
+func serveHijack(w http.ResponseWriter, targetConn net.Conn) error {
+	clientConn, bufReader, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		return fmt.Errorf("hijack failed: %v", err)
+	}
+	defer clientConn.Close()
+	// bufReader may contain unprocessed buffered data from the client.
+	if bufReader != nil {
+		// snippet borrowed from `proxy` plugin
+		if n := bufReader.Reader.Buffered(); n > 0 {
+			rbuf, err := bufReader.Reader.Peek(n)
 			if err != nil {
-				if err != io.EOF {
-				}
-				return
+				return err
 			}
-			_, err = conn.Write(buf[:n])
-			if err != nil {
-				if err != io.EOF {
-				}
-				return
-			}
-			conn.SetDeadline(time.Now().Add(time.Minute))
+			_, _ = targetConn.Write(rbuf)
+
 		}
-	}(wg)
-	go func(wg *sync.WaitGroup) {
-		defer wg.Done()
-		buf := make([]byte, 1024*10)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				if err != io.EOF {
-				}
-				return
-			}
-			_, err = to.Write(buf[:n])
+	}
+	// Since we hijacked the connection, we lost the ability to write and flush headers via w.
+	// Let's handcraft the response and send it manually.
+	res := &http.Response{
+		StatusCode: http.StatusOK,
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     make(http.Header),
+	}
+	res.Header.Set("Server", "Caddy")
 
-			if err != nil {
-				if err != io.EOF {
-				}
-				return
-			}
-			conn.SetDeadline(time.Now().Add(time.Minute))
+	buf := bufio.NewWriter(clientConn)
+	err = res.Write(buf)
+	if err != nil {
+		return fmt.Errorf("failed to write response: %v", err)
+	}
+	err = buf.Flush()
+	if err != nil {
+		return fmt.Errorf("failed to send response to client: %v", err)
+	}
+
+	return dualStream(targetConn, clientConn, clientConn)
+}
+
+// Copies data target->clientReader and clientWriter->target, and flushes as needed
+// Returns when clientWriter-> target stream is done.
+// Caddy should finish writing target -> clientReader.
+func dualStream(target net.Conn, clientReader io.ReadCloser, clientWriter io.Writer) error {
+	stream := func(w io.Writer, r io.Reader) error {
+		// copy bytes from r to w
+		bufPtr := bufferPool.Get().(*[]byte)
+		buf := *bufPtr
+		buf = buf[0:cap(buf)]
+		_, _err := flushingIoCopy(w, r, buf)
+		bufferPool.Put(bufPtr)
+
+		if cw, ok := w.(closeWriter); ok {
+			_ = cw.CloseWrite()
 		}
-	}(wg)
-	wg.Wait()
+		return _err
+	}
+	go stream(target, clientReader) //nolint: errcheck
+	return stream(clientWriter, target)
+}
+
+type closeWriter interface {
+	CloseWrite() error
+}
+
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		buffer := make([]byte, 0, 32*1024)
+		return &buffer
+	},
+}
+
+// flushingIoCopy is analogous to buffering io.Copy(), but also attempts to flush on each iteration.
+// If dst does not implement http.Flusher(e.g. net.TCPConn), it will do a simple io.CopyBuffer().
+// Reasoning: http2ResponseWriter will not flush on its own, so we have to do it manually.
+func flushingIoCopy(dst io.Writer, src io.Reader, buf []byte) (written int64, err error) {
+	rw, ok := dst.(http.ResponseWriter)
+	if !ok {
+		return io.CopyBuffer(dst, src, buf)
+	}
+	rc := http.NewResponseController(rw)
+	for {
+		nr, er := src.Read(buf)
+		if nr > 0 {
+			nw, ew := dst.Write(buf[0:nr])
+			if nw > 0 {
+				written += int64(nw)
+			}
+			if ew != nil {
+				err = ew
+				break
+			}
+			ef := rc.Flush()
+			if ef != nil {
+				err = ef
+				break
+			}
+			if nr != nw {
+				err = io.ErrShortWrite
+				break
+			}
+		}
+		if er != nil {
+			if er != io.EOF {
+				err = er
+			}
+			break
+		}
+	}
+	return
 }
 
 func get(w http.ResponseWriter, r *http.Request) {
@@ -119,17 +193,26 @@ func get(w http.ResponseWriter, r *http.Request) {
 
 	to := flushWriter{w}
 
+	println(r.RequestURI)
 	req, _ := http.NewRequest(
 		r.Method,
-		"http://"+r.Host+r.RequestURI,
+		r.RequestURI,
 		r.Body,
 	)
-	cli := http.Client{Timeout: 10 * time.Minute}
+	cli := http.Client{
+		Timeout: 10 * time.Minute,
+		// disable redirect
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	req.Header = r.Header
 	req.Header.Del("Proxy-Authorization")
 
 	resp, err := cli.Do(req)
 	if err != nil {
+		println(err.Error())
+		return
 	}
 	for k, v := range resp.Header {
 		if len(v) == 0 {
@@ -140,8 +223,4 @@ func get(w http.ResponseWriter, r *http.Request) {
 	f.Flush()
 
 	io.Copy(to, resp.Body)
-}
-
-func closeConn(conn io.Closer) {
-	conn.Close()
 }

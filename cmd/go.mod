@@ -2,6 +2,8 @@ module github.com/btwiuse/connect/cmd
 
 go 1.22.2
 
+replace github.com/btwiuse/connect => ..
+
 require (
 	github.com/btwiuse/connect v0.0.3
 	github.com/webteleport/utils v0.2.14

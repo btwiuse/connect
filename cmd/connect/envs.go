@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"net/http"
+	"os"
 
 	"github.com/webteleport/utils"
 )
@@ -15,8 +16,6 @@ var (
 	HTTPS_PORT = utils.LookupEnvPort("HTTPS_PORT")
 )
 
-var NextProtos = []string{"http/1.1", "h2"}
-
 func LocalTLSConfig(certFile, keyFile string) *tls.Config {
 	GetCertificate := func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 		// Always get latest localhost.crt and localhost.key
@@ -26,9 +25,16 @@ func LocalTLSConfig(certFile, keyFile string) *tls.Config {
 		}
 		return &cert, nil
 	}
+	nextProtos := []string{
+		"h2",
+		"http/1.1",
+	}
+	if os.Getenv("H2") == "" {
+	}
 	return &tls.Config{
 		GetCertificate: GetCertificate,
-		NextProtos:     NextProtos,
+		NextProtos:     nextProtos,
+		MinVersion:     tls.VersionTLS12,
 	}
 }
 
